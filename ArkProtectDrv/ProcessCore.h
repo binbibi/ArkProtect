@@ -12,6 +12,13 @@
 
 #define MAX_PROCESS_COUNT  100000
 
+#define HANDLE_VALUE_INC    4
+#define HT_PAGE_SIZE        4096
+#define HT_ENTRY_SIZE       (2*sizeof(PVOID))
+
+#define HT_LOWLEVEL_COUNT   ((HT_PAGE_SIZE)/HT_ENTRY_SIZE)
+#define HT_MIDLEVEL_COUNT   ((HT_PAGE_SIZE)/sizeof(PVOID))
+
 typedef struct _PROCESS_ENTRY_INFORMATION
 {
 	WCHAR     wzImageName[100];
@@ -53,14 +60,14 @@ APGetProcessFullPath(IN PEPROCESS EProcess, OUT PWCHAR ProcessFullPath);
 VOID 
 APGetProcessInfo(IN PEPROCESS EProcess, OUT PPROCESS_INFORMATION pi, IN UINT32 ProcessCount);
 
-VOID 
-APEnumProcessInfoByIterateFirstLevelHandleTable(IN UINT_PTR TableCode, OUT PPROCESS_INFORMATION pi, IN UINT32 ProcessCount);
+VOID
+APEnumProcessInfoByIterateFirstLevelHandleTable(IN UINT_PTR TableCode, IN UINT32 nMaxHandleIndex, OUT PPROCESS_INFORMATION pi, IN UINT32 ProcessCount);
 
 VOID 
-APEnumProcessInfoByIterateSecondLevelHandleTable(IN UINT_PTR TableCode, OUT PPROCESS_INFORMATION pi, IN UINT32 ProcessCount);
+APEnumProcessInfoByIterateSecondLevelHandleTable(IN UINT_PTR TableCode, IN UINT32 nMaxHandleIndex, OUT PPROCESS_INFORMATION pi, IN UINT32 ProcessCount);
 
 VOID
-APEnumProcessInfoByIterateThirdLevelHandleTable(IN UINT_PTR TableCode, OUT PPROCESS_INFORMATION pi, IN UINT32 ProcessCount);
+APEnumProcessInfoByIterateThirdLevelHandleTable(IN UINT_PTR TableCode, IN UINT32 nMaxHandleIndex, OUT PPROCESS_INFORMATION pi, IN UINT32 ProcessCount);
 
 NTSTATUS 
 APEnumProcessInfoByIteratePspCidTable(OUT PPROCESS_INFORMATION pi, IN UINT32 ProcessCount);

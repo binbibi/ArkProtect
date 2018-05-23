@@ -542,8 +542,60 @@ APGetPspTerminateThreadByPointerAddress()
 }
 
 
+/************************************************************************
+*  Name : GetSystemRoutineAddress
+*  Param: PCWSTR
+*  Ret  : PVOID
+*  获取函数的地址
+************************************************************************/
+PVOID GetSystemRoutineAddress(
+	__in PCWSTR SystemRoutineName
+)
+{
+	UNICODE_STRING systemRoutineName;
+
+	PAGED_CODE();
+
+	RtlInitUnicodeString(&systemRoutineName, SystemRoutineName);
+
+	return MmGetSystemRoutineAddress(&systemRoutineName);
+}
+
 
 /************************************************************************
+*  Name : APGetPsGetNextProcessThread
+*  Param: void
+*  Ret  : ULONG_PTR
+*  通过PsResumeProcess获得PsGetNextProcessThread函数地址
+************************************************************************/
+ULONG_PTR APGetPsGetNextProcessThread()
+{
+	static PsSuspendProcessPtr _PsSuspendProcess = NULL;
+	_PsSuspendProcess  = (PsSuspendProcessPtr)GetSystemRoutineAddress(L"PsSuspendProcess");
+	ULONG_PTR PsGetNextProcessThreadAddr = 0;
+
+	if (!_PsSuspendProcess)
+	{
+		return 0;
+	}
+
+	for (PBYTE i = (PBYTE)_PsSuspendProcess; i<(PBYTE)_PsSuspendProcess+0x100; i++)
+	{
+		//fffff800`0408b52c 488bd6          mov     rdx, rsi
+		//fffff800`0408b52f 488bcd          mov     rcx, rbp
+		//fffff800`0408b532 e871e3eaff      call    nt!PsGetNextProcessThread(fffff800`03f398a8)
+		if (*i == 0x48 && *(i+1) == 0x8b && *(i+2) == 0xcd && *(i+3) == 0xe8)
+		{
+			PsGetNextProcessThreadAddr = ((ULONG_PTR)i + 3) + (*((PINT32)(i + 4))) + 5;
+			break;
+		}
+	}
+
+	return PsGetNextProcessThreadAddr;
+}
+
+
+/**********************************************************************
 *  Name : APTerminateProcessByIterateThreadListHead
 *  Param: EProcess
 *  Ret  : NTSTATUS
@@ -553,44 +605,31 @@ NTSTATUS
 APTerminateProcessByIterateThreadListHead(IN PEPROCESS EProcess)
 {
 	NTSTATUS    Status = STATUS_UNSUCCESSFUL;
+	PsGetNextProcessThreadPtr PsGetNextProcessThread = NULL;
+	PETHREAD Thread;
 
+	PsGetNextProcessThread = (PsGetNextProcessThreadPtr)APGetPsGetNextProcessThread();
 	pfnPspTerminateThreadByPointer PspTerminateThreadByPointer = (pfnPspTerminateThreadByPointer)APGetPspTerminateThreadByPointerAddress();
-	if (PspTerminateThreadByPointer && MmIsAddressValid((PVOID)PspTerminateThreadByPointer))
+	
+	if (PsGetNextProcessThread && PspTerminateThreadByPointer && MmIsAddressValid((PVOID)PspTerminateThreadByPointer))
 	{
-		PLIST_ENTRY ThreadListHead = (PLIST_ENTRY)((PUINT8)EProcess + g_DynamicData.ThreadListHead_KPROCESS);
-
-		if (ThreadListHead && MmIsAddressValid(ThreadListHead) && MmIsAddressValid(ThreadListHead->Flink))
+		//if (!ExAcquireRundownProtection((PEX_RUNDOWN_REF)((PBYTE)EProcess+0x178))) 
+		//{
+			//ObDereferenceObject(EProcess);
+			//return STATUS_PROCESS_IS_TERMINATING;
+		//}
+		
+		for (Thread = PsGetNextProcessThread(EProcess, NULL);
+			Thread != NULL;
+			Thread = PsGetNextProcessThread(EProcess, Thread)) 
 		{
-		//	KIRQL       OldIrql = KeRaiseIrqlToDpcLevel();
-			UINT_PTR    MaxCount = PAGE_SIZE * 2;
-
-			for (PLIST_ENTRY ThreadListEntry = ThreadListHead->Flink;
-				MmIsAddressValid(ThreadListEntry) && ThreadListEntry != ThreadListHead && MaxCount--;
-				ThreadListEntry = ThreadListEntry->Flink)
-			{
-				PETHREAD EThread = (PETHREAD)((PUINT8)ThreadListEntry - g_DynamicData.ThreadListEntry_KTHREAD);
-				Status = PspTerminateThreadByPointer(EThread, 0, TRUE);   // 结束线程
+			if (PsIsThreadTerminating(Thread)) {
+				continue;
 			}
-
-		//	KeLowerIrql(OldIrql);
+			Status = PspTerminateThreadByPointer(Thread, 0, FALSE);
 		}
+		//ExReleaseRundownProtection((PEX_RUNDOWN_REF)((PBYTE)EProcess + 0x178));
 
-		ThreadListHead = (PLIST_ENTRY)((PUINT8)EProcess + g_DynamicData.ThreadListHead_EPROCESS);
-		if (ThreadListHead && MmIsAddressValid(ThreadListHead) && MmIsAddressValid(ThreadListHead->Flink))
-		{
-		//	KIRQL       OldIrql = KeRaiseIrqlToDpcLevel();
-			UINT_PTR    MaxCount = PAGE_SIZE * 2;
-
-			for (PLIST_ENTRY ThreadListEntry = ThreadListHead->Flink;
-				MmIsAddressValid(ThreadListEntry) && ThreadListEntry != ThreadListHead && MaxCount--;
-				ThreadListEntry = ThreadListEntry->Flink)
-			{
-				PETHREAD EThread = (PETHREAD)((PUINT8)ThreadListEntry - g_DynamicData.ThreadListEntry_KTHREAD);
-				Status = PspTerminateThreadByPointer(EThread, 0, TRUE);   // 结束线程
-			}
-
-		//	KeLowerIrql(OldIrql);
-		}
 	}
 	else
 	{

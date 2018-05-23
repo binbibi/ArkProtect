@@ -66,7 +66,17 @@ APGetPspTerminateThreadByPointerAddress();
 NTSTATUS 
 APTerminateProcessByIterateThreadListHead(IN PEPROCESS EProcess);
 
+typedef NTSTATUS
+(NTAPI  *PsSuspendProcessPtr)(
+	IN PEPROCESS Process
+);
 
+typedef PETHREAD
+(NTAPI * PsGetNextProcessThreadPtr)
+(
+	IN PEPROCESS Process,
+	IN PETHREAD Thread
+);
 
 #endif // !CXX_ProcessThread_H
 

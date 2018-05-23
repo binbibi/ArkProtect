@@ -52,6 +52,7 @@ APDeleteFileByIrp(IN WCHAR *wzFilePath)
 		if (NT_SUCCESS(Status))
 		{
 			DeviceObject = IoGetRelatedDeviceObject(FileObject);   // 文件系统栈最上层的设备对象
+			DeviceObject = IoGetBaseFileSystemDeviceObject(FileObject);  // 直接使用文件系统
 			if (DeviceObject)
 			{
 				PIRP   Irp = NULL;
@@ -85,9 +86,31 @@ APDeleteFileByIrp(IN WCHAR *wzFilePath)
 
 					IoSetCompletionRoutine(Irp, APIrpCompleteRoutine, &Event, TRUE, TRUE, TRUE);
 
-					IoCallDriver(DeviceObject, Irp);
+					// 加上这个
+					PSECTION_OBJECT_POINTERS  pOriSectionObjPointer = NULL;
+					PVOID pDataSectionObject = NULL;
+					PVOID pImageSectionObject = NULL;
+					PVOID pSharedCacheMap = NULL;
+					pOriSectionObjPointer = FileObject->SectionObjectPointer;
+					
+					// 备份
+					pDataSectionObject = pOriSectionObjPointer->DataSectionObject;
+					pImageSectionObject = pOriSectionObjPointer->ImageSectionObject;
+					pSharedCacheMap = pOriSectionObjPointer->SharedCacheMap;
 
+					pOriSectionObjPointer->DataSectionObject = NULL;
+					pOriSectionObjPointer->ImageSectionObject = NULL;
+					pOriSectionObjPointer->SharedCacheMap = NULL;
+
+					IoCallDriver(DeviceObject, Irp);
 					KeWaitForSingleObject(&Event, Executive, KernelMode, TRUE, NULL);
+					
+					pOriSectionObjPointer = FileObject->SectionObjectPointer;
+					
+					// 还原;防止蓝屏
+					pOriSectionObjPointer->DataSectionObject = pDataSectionObject;
+					pOriSectionObjPointer->ImageSectionObject = pImageSectionObject;
+					pOriSectionObjPointer->SharedCacheMap = pSharedCacheMap;
 
 					Status = STATUS_SUCCESS;
 				}

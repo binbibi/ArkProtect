@@ -334,7 +334,7 @@ APGetProcessInfo(IN PEPROCESS EProcess, OUT PPROCESS_INFORMATION pi, IN UINT32 P
 *  遍历一级表
 ************************************************************************/
 VOID
-APEnumProcessInfoByIterateFirstLevelHandleTable(IN UINT_PTR TableCode,
+APEnumProcessInfoByIterateFirstLevelHandleTable(IN UINT_PTR TableCode, IN UINT32 nMaxHandleIndex,
 	OUT PPROCESS_INFORMATION pi, IN UINT32 ProcessCount)
 {
 	/*
@@ -361,12 +361,18 @@ APEnumProcessInfoByIterateFirstLevelHandleTable(IN UINT_PTR TableCode,
 	8b404070  863f5021 00000000 863f5d49 00000000
 	*/
 
-	PHANDLE_TABLE_ENTRY	HandleTableEntry = (PHANDLE_TABLE_ENTRY)(*(PUINT_PTR)TableCode + g_DynamicData.HandleTableEntryOffset);
+	PHANDLE_TABLE_ENTRY	HandleTableEntry = (PHANDLE_TABLE_ENTRY)(*(PUINT_PTR)TableCode); //+ g_DynamicData.HandleTableEntryOffset);
 
-	for (UINT32 i = 0; i < 0x200; i++)		// 512个表项
+	for (UINT32 i = 0; i < nMaxHandleIndex/4; i++)		// 512个表项
 	{
 		if (MmIsAddressValid((PVOID)&(HandleTableEntry->NextFreeTableEntry)))
 		{
+			if (HandleTableEntry->NextFreeTableEntry == 0xfffffffe)
+			{
+				HandleTableEntry++;
+				continue;
+			}
+
 			if (HandleTableEntry->NextFreeTableEntry == 0 &&
 				HandleTableEntry->Object != NULL &&
 				MmIsAddressValid(HandleTableEntry->Object))
@@ -390,7 +396,7 @@ APEnumProcessInfoByIterateFirstLevelHandleTable(IN UINT_PTR TableCode,
 *  遍历二级表
 ************************************************************************/
 VOID
-APEnumProcessInfoByIterateSecondLevelHandleTable(IN UINT_PTR TableCode,
+APEnumProcessInfoByIterateSecondLevelHandleTable(IN UINT_PTR TableCode, IN UINT32 nMaxHandleIndex,
 	OUT PPROCESS_INFORMATION pi, IN UINT32 ProcessCount)
 {
 	/*
@@ -404,14 +410,16 @@ APEnumProcessInfoByIterateSecondLevelHandleTable(IN UINT_PTR TableCode,
 	0: kd> dd 0xa4aaf000
 	a4aaf000  8b404000 a4a56000 00000000 00000000
 	*/
+	UINT32 nTableLevel1Count = (nMaxHandleIndex / HANDLE_VALUE_INC) / HT_LOWLEVEL_COUNT;
+	UINT32 i = 0;
 
-	do
+	do 
 	{
-		APEnumProcessInfoByIterateFirstLevelHandleTable(TableCode, pi, ProcessCount);		// fffff8a0`00fc5000..../ fffff8a0`00fc5008....
+		APEnumProcessInfoByIterateFirstLevelHandleTable(TableCode, HT_LOWLEVEL_COUNT * HANDLE_VALUE_INC, pi, ProcessCount);		// fffff8a0`00fc5000..../ fffff8a0`00fc5008....
 		TableCode += sizeof(UINT_PTR);
-
-	} while (*(PUINT_PTR)TableCode != 0 && MmIsAddressValid((PVOID)*(PUINT_PTR)TableCode));
-
+		i++;
+	} while (i < nTableLevel1Count);
+	
 }
 
 /************************************************************************
@@ -424,16 +432,19 @@ APEnumProcessInfoByIterateSecondLevelHandleTable(IN UINT_PTR TableCode,
 *  遍历三级表
 ************************************************************************/
 VOID
-APEnumProcessInfoByIterateThirdLevelHandleTable(IN UINT_PTR TableCode,
+APEnumProcessInfoByIterateThirdLevelHandleTable(IN UINT_PTR TableCode, IN UINT32 nMaxHandleIndex,
 	OUT PPROCESS_INFORMATION pi, IN UINT32 ProcessCount)
 {
-	do
+	UINT32 nTableLevel2Count = ((nMaxHandleIndex / HANDLE_VALUE_INC) / HT_LOWLEVEL_COUNT) / HT_MIDLEVEL_COUNT;
+	UINT32 i = 0;
+
+	do 
 	{
-		APEnumProcessInfoByIterateSecondLevelHandleTable(TableCode, pi, ProcessCount);
+		APEnumProcessInfoByIterateSecondLevelHandleTable(TableCode, HT_MIDLEVEL_COUNT * HT_LOWLEVEL_COUNT * HANDLE_VALUE_INC, pi, ProcessCount);
 		TableCode += sizeof(UINT_PTR);
-
-	} while (*(PUINT_PTR)TableCode != 0 && MmIsAddressValid((PVOID)*(PUINT_PTR)TableCode));
-
+		i++;
+	} while (i < nTableLevel2Count);
+	
 }
 
 
@@ -443,6 +454,8 @@ APEnumProcessInfoByIteratePspCidTable(OUT PPROCESS_INFORMATION pi, IN UINT32 Pro
 	NTSTATUS Status = STATUS_UNSUCCESSFUL;
 
 	// 保存之前的模式，转成KernelMode
+	   
+
 	PETHREAD EThread = PsGetCurrentThread();
 	UINT8    PreviousMode = APChangeThreadMode(EThread, KernelMode);
 
@@ -460,11 +473,14 @@ APEnumProcessInfoByIteratePspCidTable(OUT PPROCESS_INFORMATION pi, IN UINT32 Pro
 		HandleTable = (PHANDLE_TABLE)(*(PUINT_PTR)PspCidTable);  	// HandleTable = fffff8a0`00004910
 		if (HandleTable && MmIsAddressValid((PVOID)HandleTable))
 		{
-			UINT8			TableLevel = 0;		// 指示句柄表层数
+			UINT8			TableLevel = 0;		    // 指示句柄表层数
 			UINT_PTR		TableCode = 0;			// 地址存放句柄表首地址
+			UINT32          nMaxHandleIndex = 0;
 
 			TableCode = HandleTable->TableCode & 0xFFFFFFFFFFFFFFFC;	// TableCode = 0xfffff8a0`00fc5000
 			TableLevel = HandleTable->TableCode & 0x03;	                // TableLevel = 0x01
+
+			nMaxHandleIndex = HandleTable->NextHandleNeedingPool & 0xFFFFFFFF;
 
 			if (TableCode && MmIsAddressValid((PVOID)TableCode))
 			{
@@ -473,19 +489,19 @@ APEnumProcessInfoByIteratePspCidTable(OUT PPROCESS_INFORMATION pi, IN UINT32 Pro
 				case 0:
 				{
 					// 一层表
-					APEnumProcessInfoByIterateFirstLevelHandleTable(TableCode, pi, ProcessCount);
+					APEnumProcessInfoByIterateFirstLevelHandleTable(TableCode, IN nMaxHandleIndex, pi, ProcessCount);
 					break;
 				}
 				case 1:
 				{
 					// 二层表
-					APEnumProcessInfoByIterateSecondLevelHandleTable(TableCode, pi, ProcessCount);
+					APEnumProcessInfoByIterateSecondLevelHandleTable(TableCode, IN nMaxHandleIndex, pi, ProcessCount);
 					break;
 				}
 				case 2:
 				{
 					// 三层表
-					APEnumProcessInfoByIterateThirdLevelHandleTable(TableCode, pi, ProcessCount);
+					APEnumProcessInfoByIterateThirdLevelHandleTable(TableCode, IN nMaxHandleIndex, pi, ProcessCount);
 					break;
 				}
 				default:
