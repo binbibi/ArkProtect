@@ -398,6 +398,24 @@ APFixRelocBaseTable(IN PVOID ReloadBase, IN PVOID OriginalBase)
 				{
 #ifdef _WIN64
 					// 调试发现 Win7 x64的全局变量没有能够修复成功
+				    // x64重载内核用不了，是因为x64PE生成规则的问题，x64PE的32位段内偏移不是绝对地址而是相对地址，这样导致32位段内偏移在x64PE文件中根本不需要添加到重定位表中，所以无法把重载内核后的全局变量定位到真内核中
+					/*fffff800`03fb61fc 48895c2408      mov     qword ptr[rsp + 8], rbx
+					fffff800`03fb6201 48896c2410      mov     qword ptr[rsp + 10h], rbp
+					fffff800`03fb6206 4889742418      mov     qword ptr[rsp + 18h], rsi
+					fffff800`03fb620b 57              push    rdi
+					fffff800`03fb620c 4154            push    r12
+					fffff800`03fb620e 4155            push    r13
+					fffff800`03fb6210 4883ec20        sub     rsp, 20h
+					fffff800`03fb6214 65488b3c2588010000 mov   rdi, qword ptr gs : [188h]
+					fffff800`03fb621d 4533e4          xor     r12d, r12d
+					fffff800`03fb6220 488bea          mov     rbp, rdx
+					fffff800`03fb6223 66ff8fc4010000  dec     word ptr[rdi + 1C4h]
+					fffff800`03fb622a 498bdc          mov     rbx, r12
+					fffff800`03fb622d 488bd1          mov     rdx, rcx
+					fffff800`03fb6230 488b0d9149edff  mov     rcx, qword ptr[nt!PspCidTable(fffff800`03e8abc8)]
+					                  488b 0d9149edff mov     rcx, QWORD PTR [rip+0xffffffffffed4991]  // 用的是偏移来获取全局变量的地址;所以这个地方不会出现在重定位表
+					fffff800`03fb6237 e834480200      call    nt!ExMapHandleToPointer(fffff800`03fdaa70)
+					fffff800`03fb623c 458d6c2401      lea     r13d, [r12 + 1]*/
 					PUINT64	RelocAddress = (PUINT64)((PUINT8)ReloadBase + BaseRelocation->VirtualAddress + (TypeOffset[i] & 0x0FFF));  // 定位到重定向块
 					*RelocAddress = (UINT64)(*RelocAddress + (INT_PTR)((UINT_PTR)OriginalBase - (UINT_PTR)NtHeader->OptionalHeader.ImageBase));            // 重定向块的数据 + （真实加载地址 - 预加载地址 = Offset）
 

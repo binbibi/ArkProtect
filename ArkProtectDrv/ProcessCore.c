@@ -7,6 +7,24 @@ typedef
 UINT_PTR
 (*pfnObGetObjectType)(PVOID Object);
 
+NTKERNELAPI
+BOOLEAN
+PsGetProcessExitProcessCalled(
+	__in PEPROCESS Process
+);
+
+NTKERNELAPI
+HANDLE
+PsGetProcessInheritedFromUniqueProcessId(
+	__in PEPROCESS Process
+);
+
+typedef
+NTSTATUS
+(NTAPI * PSREFERENCEPROCESSFILEPOINTER)(
+	__in PEPROCESS Process,
+	__out PVOID *OutFileObject
+	);
 
 /************************************************************************
 *  Name : APGetPsIdleProcess
@@ -19,6 +37,11 @@ APGetPsIdleProcess()
 {
 	UINT_PTR PsIdleProcess = 0;
 	UINT_PTR PsInitialSystemProcessAddress = (UINT_PTR)&PsInitialSystemProcess;
+
+	/*1: kd > x nt!PsIdleProcess
+	fffff800`03f140d0 nt!PsIdleProcess = < no type information>
+	1: kd > x nt!PsInitialSystemProcess
+	fffff800`03f14030 nt!PsInitialSystemProcess = <no type information>*/
 
 	if (PsInitialSystemProcessAddress && MmIsAddressValid((PVOID)((PUINT8)PsInitialSystemProcessAddress + 0xA0)))
 	{
@@ -66,9 +89,10 @@ APGetObjectType(IN PVOID Object)
 BOOLEAN
 APIsActiveProcess(IN PEPROCESS EProcess)
 {
-	BOOLEAN bOk = FALSE;
-
-	if (EProcess &&
+	BOOLEAN bActive = FALSE;
+	// 换个稳当点的不需要硬编码
+	// PsGetProcessExitProcessCalled
+	/*if (EProcess &&
 		MmIsAddressValid(EProcess) &&
 		MmIsAddressValid((PVOID)((PUINT8)EProcess + g_DynamicData.ObjectTable)))
 	{
@@ -79,9 +103,14 @@ APIsActiveProcess(IN PEPROCESS EProcess)
 		{
 			bOk = TRUE;
 		}
+	}*/
+
+	if (EProcess && MmIsAddressValid(EProcess))
+	{
+		bActive = (PsGetProcessExitProcessCalled(EProcess)!= TRUE);
 	}
 
-	return bOk;
+	return bActive;
 }
 
 
@@ -164,7 +193,7 @@ APGetProcessNum(OUT PVOID OutputBuffer)
 UINT_PTR
 APGetParentProcessId(IN PEPROCESS EProcess)
 {
-	if (MmIsAddressValid &&
+	/*if (MmIsAddressValid &&
 		EProcess &&
 		MmIsAddressValid(EProcess) &&
 		MmIsAddressValid((PVOID)((PUINT8)EProcess + g_DynamicData.ObjectTable)))
@@ -174,6 +203,11 @@ APGetParentProcessId(IN PEPROCESS EProcess)
 		ParentProcessId = *(PUINT_PTR)((PUINT8)EProcess + g_DynamicData.InheritedFromUniqueProcessId);
 
 		return ParentProcessId;
+	}*/
+
+	if (APIsValidProcess(EProcess))
+	{
+		return (UINT_PTR)PsGetProcessInheritedFromUniqueProcessId(EProcess);
 	}
 
 	return 0;
@@ -191,98 +225,148 @@ NTSTATUS
 APGetProcessFullPath(IN PEPROCESS EProcess, OUT PWCHAR ProcessFullPath)
 {
 	NTSTATUS	Status = STATUS_UNSUCCESSFUL;
+	static PSREFERENCEPROCESSFILEPOINTER PsReferenceProcessFilePointer = NULL;
+	PVOID                    FilePointer = NULL;
 
-	if (APIsValidProcess(EProcess))
+	if (!PsReferenceProcessFilePointer)
 	{
-		/*
-		3: kd> dt _EPROCESS fffffa801ac21060
-		nt!_EPROCESS
-		+0x000 Pcb              : _KPROCESS
-		......
-		+0x268 SectionObject    : 0xfffff8a0`01bf2a50 Void
-		*/
-		PSECTION_OBJECT SectionObject = (PSECTION_OBJECT)(*(PUINT_PTR)((PUINT8)EProcess + g_DynamicData.SectionObject));
-
-		if (SectionObject && MmIsAddressValid(SectionObject))
+		if (!APGetNtosExportVariableAddress(L"PsReferenceProcessFilePointer", (PVOID*)&PsReferenceProcessFilePointer))
 		{
-			/*
-			3: kd> dt _SECTION_OBJECT 0xfffff8a0`01bf2a50
-			nt!_SECTION_OBJECT
-			+0x000 StartingVa       : (null)
-			......
-			+0x028 Segment          : 0xfffff8a0`01deb000 _SEGMENT_OBJECT
-			*/
-			PSEGMENT Segment = SectionObject->Segment;
-
-			if (Segment && MmIsAddressValid(Segment))
-			{
-				/*
-				3: kd> dt _SEGMENT 0xfffff8a0`01deb000
-				nt!_SEGMENT
-				+0x000 ControlArea      : 0xfffffa80`1ac18800 _CONTROL_AREA
-				......
-				*/
-				PCONTROL_AREA ControlArea = Segment->ControlArea;
-
-				if (ControlArea && MmIsAddressValid(ControlArea))
-				{
-					/*
-					3: kd> dt _CONTROL_AREA 0xfffffa80`1ac18800
-					nt!_CONTROL_AREA
-					+0x000 Segment          : 0xfffff8a0`01deb000 _SEGMENT
-					......
-					+0x040 FilePointer      : _EX_FAST_REF
-
-					3: kd> dq 0xfffffa80`1ac18800+40
-					fffffa80`1ac18840  fffffa80`1ac18d44 00000000`00000000
-					*/
-					//PFILE_OBJECT FileObject = (PFILE_OBJECT)((UINT_PTR)ControlArea->FilePointer & 0xFFFFFFFFFFFFFFF8);
-					
-#ifdef _WIN64
-					PFILE_OBJECT FileObject = (PFILE_OBJECT)((UINT_PTR)ControlArea->FilePointer & ~0xf);
-#else
-					PFILE_OBJECT FileObject = (PFILE_OBJECT)((UINT_PTR)ControlArea->FilePointer & ~7);
-#endif // _WIN64
-
-					
-
-					if (FileObject && MmIsAddressValid(FileObject))
-					{
-						POBJECT_NAME_INFORMATION    oni = NULL;
-						/*
-						3: kd> dt _FILE_OBJECT fffffa80`1ac18d40
-						nt!_FILE_OBJECT
-						+0x000 Type             : 0n5
-						......
-						+0x058 FileName         : _UNICODE_STRING "\Windows\explorer.exe"
-						*/
-						Status = IoQueryFileDosDeviceName(FileObject, &oni);
-						if (NT_SUCCESS(Status))
-						{
-							UINT32 ProcessFullPathLength = 0;
-
-							if (oni->Name.Length >= MAX_PATH)
-							{
-								ProcessFullPathLength = MAX_PATH - 1;
-							}
-							else
-							{
-								ProcessFullPathLength = oni->Name.Length;
-							}
-
-							//RtlCopyMemory(ProcessFullPath, oni->Name.Buffer, ProcessFullPathLength);
-
-							RtlStringCchCopyW(ProcessFullPath, ProcessFullPathLength + 1, oni->Name.Buffer);
-
-							Status = STATUS_SUCCESS;
-
-							DbgPrint("%S\r\n", ProcessFullPath);
-						}
-					}
-				}
-			}
+			return Status;
 		}
 	}
+
+	if (!APIsValidProcess(EProcess))
+		return Status;
+
+	Status = PsReferenceProcessFilePointer(EProcess, &FilePointer);
+	
+	if (NT_SUCCESS(Status))
+	{
+		POBJECT_NAME_INFORMATION    FileNameInfo = NULL;
+		Status = IoQueryFileDosDeviceName(FilePointer, &FileNameInfo);
+		
+		if (NT_SUCCESS(Status))
+		{
+			UINT32 ProcessFullPathLength = 0;
+			
+			if (FileNameInfo->Name.Length >= MAX_PATH)
+			{
+				ProcessFullPathLength = MAX_PATH - 1;
+			}
+			else
+			{
+				ProcessFullPathLength = FileNameInfo->Name.Length;
+			}
+			
+			//RtlCopyMemory(ProcessFullPath, oni->Name.Buffer, ProcessFullPathLength);
+			
+			RtlStringCchCopyW(ProcessFullPath, ProcessFullPathLength + 1, FileNameInfo->Name.Buffer);
+		}
+
+		if (FileNameInfo)
+		{
+			ExFreePool(FileNameInfo);
+		}
+		
+		ObDereferenceObject(FilePointer);
+	}
+	
+	return Status;
+	
+	
+
+//	if (APIsValidProcess(EProcess))
+//	{
+//		/*
+//		3: kd> dt _EPROCESS fffffa801ac21060
+//		nt!_EPROCESS
+//		+0x000 Pcb              : _KPROCESS
+//		......
+//		+0x268 SectionObject    : 0xfffff8a0`01bf2a50 Void
+//		*/
+//		PSECTION_OBJECT SectionObject = (PSECTION_OBJECT)(*(PUINT_PTR)((PUINT8)EProcess + g_DynamicData.SectionObject));
+//
+//		if (SectionObject && MmIsAddressValid(SectionObject))
+//		{
+//			/*
+//			3: kd> dt _SECTION_OBJECT 0xfffff8a0`01bf2a50
+//			nt!_SECTION_OBJECT
+//			+0x000 StartingVa       : (null)
+//			......
+//			+0x028 Segment          : 0xfffff8a0`01deb000 _SEGMENT_OBJECT
+//			*/
+//			PSEGMENT Segment = SectionObject->Segment;
+//
+//			if (Segment && MmIsAddressValid(Segment))
+//			{
+//				/*
+//				3: kd> dt _SEGMENT 0xfffff8a0`01deb000
+//				nt!_SEGMENT
+//				+0x000 ControlArea      : 0xfffffa80`1ac18800 _CONTROL_AREA
+//				......
+//				*/
+//				PCONTROL_AREA ControlArea = Segment->ControlArea;
+//
+//				if (ControlArea && MmIsAddressValid(ControlArea))
+//				{
+//					/*
+//					3: kd> dt _CONTROL_AREA 0xfffffa80`1ac18800
+//					nt!_CONTROL_AREA
+//					+0x000 Segment          : 0xfffff8a0`01deb000 _SEGMENT
+//					......
+//					+0x040 FilePointer      : _EX_FAST_REF
+//
+//					3: kd> dq 0xfffffa80`1ac18800+40
+//					fffffa80`1ac18840  fffffa80`1ac18d44 00000000`00000000
+//					*/
+//					//PFILE_OBJECT FileObject = (PFILE_OBJECT)((UINT_PTR)ControlArea->FilePointer & 0xFFFFFFFFFFFFFFF8);
+//					
+//#ifdef _WIN64
+//					PFILE_OBJECT FileObject = (PFILE_OBJECT)((UINT_PTR)ControlArea->FilePointer & ~0xf);
+//#else
+//					PFILE_OBJECT FileObject = (PFILE_OBJECT)((UINT_PTR)ControlArea->FilePointer & ~7);
+//#endif // _WIN64
+//
+//					
+//
+//					if (FileObject && MmIsAddressValid(FileObject))
+//					{
+//						POBJECT_NAME_INFORMATION    oni = NULL;
+//						/*
+//						3: kd> dt _FILE_OBJECT fffffa80`1ac18d40
+//						nt!_FILE_OBJECT
+//						+0x000 Type             : 0n5
+//						......
+//						+0x058 FileName         : _UNICODE_STRING "\Windows\explorer.exe"
+//						*/
+//						Status = IoQueryFileDosDeviceName(FileObject, &oni);
+//						if (NT_SUCCESS(Status))
+//						{
+//							UINT32 ProcessFullPathLength = 0;
+//
+//							if (oni->Name.Length >= MAX_PATH)
+//							{
+//								ProcessFullPathLength = MAX_PATH - 1;
+//							}
+//							else
+//							{
+//								ProcessFullPathLength = oni->Name.Length;
+//							}
+//
+//							//RtlCopyMemory(ProcessFullPath, oni->Name.Buffer, ProcessFullPathLength);
+//
+//							RtlStringCchCopyW(ProcessFullPath, ProcessFullPathLength + 1, oni->Name.Buffer);
+//
+//							Status = STATUS_SUCCESS;
+//
+//							DbgPrint("%S\r\n", ProcessFullPath);
+//						}
+//					}
+//				}
+//			}
+//		}
+//	}
 
 	return Status;
 }

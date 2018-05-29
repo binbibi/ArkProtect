@@ -65,6 +65,8 @@ APEnumIoTimerByIterateIopTimerQueueHead(OUT PIO_TIMER_INFORMATION iti, IN UINT32
 	PLIST_ENTRY IopTimerQueueHead = (PLIST_ENTRY)APGetIopTimerQueueHead();
 
 	KIRQL OldIrql = 0;
+
+	//  π”√IopTimerLock
 	OldIrql = KeRaiseIrqlToDpcLevel();
 
 	if (IopTimerQueueHead && MmIsAddressValid((PVOID)IopTimerQueueHead))
